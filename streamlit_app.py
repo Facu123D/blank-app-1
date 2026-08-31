@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Bar Path Tracker - Streamlit Community Cloud Edition
+Bar Path Tracker - Streamlit Render Edition (Corregido)
 """
 
 import streamlit as st
@@ -15,7 +15,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 st.set_page_config(page_title="Bar Path Tracker", page_icon="🏋️‍♂️", layout="centered")
 
 st.title("🏋️‍♂️ Bar Path Tracker")
-st.write("Sube tu video, selecciona la barra en la imagen y analiza el levantamiento.")
+st.write("Sube tu levantamiento, selecciona la barra en la foto y analiza el recorrido.")
 
 video_file = st.file_uploader("1. Sube el video del levantamiento", type=["mp4", "mov", "avi"])
 
@@ -46,12 +46,27 @@ if video_file is not None:
 
         if coords is not None:
             cx, cy = int(coords["x"]), int(coords["y"])
-            st.success(f"🎯 Punto fijado en: X={cx}px, Y={cy}px")
+
+            # Dibuja la referencia visual en tiempo real
+            preview_img = first_frame_rgb.copy()
+            box_size = int(max(24, min(50, target_h * 0.045)))
+            half = box_size // 2
+
+            cv2.line(preview_img, (cx, 0), (cx, target_h), (250, 204, 21), 2)
+            cv2.rectangle(
+                preview_img,
+                (max(0, cx - half), max(0, cy - half)),
+                (min(target_w, cx + half), min(target_h, cy + half)),
+                (56, 189, 248), 2
+            )
+            cv2.circle(preview_img, (cx, cy), 6, (16, 185, 129), -1)
+
+            st.image(preview_img, caption=f"🎯 Punto fijado: X={cx}px, Y={cy}px (Plomada amarilla)")
 
             if st.button("🚀 3. Analizar Movimiento", type="primary", use_container_width=True):
                 with st.spinner("Procesando trayectoria con OpenCV..."):
                     cap = cv2.VideoCapture(video_path)
-                    
+
                     if hasattr(cv2, 'TrackerCSRT_create'):
                         tracker = cv2.TrackerCSRT_create()
                     elif hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create'):
@@ -59,10 +74,9 @@ if video_file is not None:
                     else:
                         tracker = cv2.TrackerKCF_create()
 
-                    box_size = int(max(24, min(50, target_h * 0.045)))
-                    init_x = max(0, min(target_w - box_size, cx - box_size // 2))
-                    init_y = max(0, min(target_h - box_size, cy - box_size // 2))
-                    
+                    init_x = max(0, min(target_w - box_size, cx - half))
+                    init_y = max(0, min(target_h - box_size, cy - half))
+
                     ret_f, f_frame = cap.read()
                     f_frame_res = cv2.resize(f_frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
                     tracker.init(f_frame_res, (init_x, init_y, box_size, box_size))
@@ -114,12 +128,20 @@ if video_file is not None:
 
                     temp_dir = tempfile.gettempdir()
                     out_video_path = os.path.join(temp_dir, "out_video.mp4")
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+                    # Códec compatible con navegadores web y móviles
+                    fourcc = cv2.VideoWriter_fourcc(*'avc1')
                     out_writer = cv2.VideoWriter(out_video_path, fourcc, fps, (target_w, target_h))
+
+                    # Fallback de códec si avc1 no está disponible en la build de OpenCV
+                    if not out_writer.isOpened():
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        out_writer = cv2.VideoWriter(out_video_path, fourcc, fps, (target_w, target_h))
 
                     for idx in range(total_frames):
                         frame = frames_buffer[idx].copy()
                         cv2.line(frame, (plumb_x, 0), (plumb_x, target_h), (250, 204, 21), 1, cv2.LINE_AA)
+
                         if idx > 1:
                             for k in range(1, idx + 1):
                                 pt1 = (int(smooth_x[k - 1]), int(smooth_y[k - 1]))
@@ -133,6 +155,18 @@ if video_file is not None:
                         curr_cx, curr_cy = int(smooth_x[idx]), int(smooth_y[idx])
                         cv2.circle(frame, (curr_cx, curr_cy), 5, (255, 255, 255), -1, cv2.LINE_AA)
                         cv2.circle(frame, (curr_cx, curr_cy), 2, (16, 185, 129), -1, cv2.LINE_AA)
+
+                        # Panel HUD de métricas sobre el video
+                        overlay = frame.copy()
+                        cv2.rectangle(overlay, (15, 15), (320, 110), (15, 23, 42), -1)
+                        cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+                        cv2.rectangle(frame, (15, 15), (320, 110), (51, 65, 85), 1, cv2.LINE_AA)
+
+                        cv2.putText(frame, "BAR PATH TRACKER", (25, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (52, 211, 153), 2, cv2.LINE_AA)
+                        cv2.putText(frame, f"Desvio: {desvio_max_cm:.1f} cm", (25, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (226, 232, 240), 1, cv2.LINE_AA)
+                        cv2.putText(frame, f"Recorrido: {distancia_vertical_cm:.1f} cm", (25, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (56, 189, 248), 2, cv2.LINE_AA)
+                        cv2.putText(frame, f"Vel. actual: {vertical_velocities[idx]:.2f} m/s", (25, 98), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (226, 232, 240), 1, cv2.LINE_AA)
+
                         out_writer.write(frame)
 
                     out_writer.release()
@@ -146,13 +180,11 @@ if video_file is not None:
                     ax.axhline(mean_vel, color='#06b6d4', linestyle='--', linewidth=1.5, label=f'Vel. Media: {mean_vel:.2f} m/s')
                     peak_idx = int(np.argmax(vertical_velocities))
                     ax.scatter([times[peak_idx]], [peak_vel], color='#f43f5e', s=70, zorder=6, label=f'Vel. Pico: {peak_vel:.2f} m/s')
-                    ax.set_title(f"Velocidad del Movimiento (Recorrido: {distancia_vertical_cm:.1f} cm | Desvío: {desvio_max_cm:.1f} cm)", fontsize=10, fontweight='bold', pad=10, color='#F1F5F9')
+                    ax.set_title(f"Curva de Velocidad (ROM: {distancia_vertical_cm:.1f} cm | Desvío: {desvio_max_cm:.1f} cm)", fontsize=10, fontweight='bold', pad=10, color='#F1F5F9')
                     ax.set_xlabel("Tiempo (segundos)", fontsize=8.5, color='#94A3B8')
                     ax.set_ylabel("Velocidad (m/s)", fontsize=8.5, color='#94A3B8')
                     ax.grid(True, linestyle=':', alpha=0.3, color='#475569')
                     ax.legend(loc='upper right', fontsize=8, framealpha=0.85, facecolor='#0F172A', edgecolor='#334155')
-
-                    efficiency = max(10, min(100, int(100 - (desvio_max_cm / (distancia_vertical_cm + 1e-5)) * 140))) if distancia_vertical_cm > 5 else 100
 
                     st.markdown("### 📊 Resultados:")
                     col1, col2, col3, col4 = st.columns(4)
@@ -162,4 +194,8 @@ if video_file is not None:
                     col4.metric("Velocidad Media", f"{mean_vel:.2f} m/s")
 
                     st.pyplot(fig)
-                    st.video(out_video_path)
+
+                    st.subheader("🎥 Video con Trazo:")
+                    with open(out_video_path, 'rb') as vf:
+                        video_bytes = vf.read()
+                        st.video(video_bytes)
