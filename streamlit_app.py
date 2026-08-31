@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Bar Path Tracker - Streamlit Render Edition (Corregido)
+Bar Path Tracker - Video Export con ImageIO FFmpeg (Compatible Web & Móvil)
 """
 
 import streamlit as st
@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import tempfile
+import imageio
 from scipy.signal import savgol_filter
 from streamlit_image_coordinates import streamlit_image_coordinates
 
@@ -35,8 +36,11 @@ if video_file is not None:
 
     if ret:
         target_w = min(720, orig_w)
+        # Asegurar dimensiones pares para FFmpeg H.264
+        if target_w % 2 != 0: target_w -= 1
         scale_factor = target_w / float(orig_w)
         target_h = int(orig_h * scale_factor)
+        if target_h % 2 != 0: target_h -= 1
 
         first_frame_resized = cv2.resize(first_frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
         first_frame_rgb = cv2.cvtColor(first_frame_resized, cv2.COLOR_BGR2RGB)
@@ -47,7 +51,7 @@ if video_file is not None:
         if coords is not None:
             cx, cy = int(coords["x"]), int(coords["y"])
 
-            # Dibuja la referencia visual en tiempo real
+            # Feedback visual de selección
             preview_img = first_frame_rgb.copy()
             box_size = int(max(24, min(50, target_h * 0.045)))
             half = box_size // 2
@@ -61,10 +65,10 @@ if video_file is not None:
             )
             cv2.circle(preview_img, (cx, cy), 6, (16, 185, 129), -1)
 
-            st.image(preview_img, caption=f"🎯 Punto fijado: X={cx}px, Y={cy}px (Plomada amarilla)")
+            st.image(preview_img, caption=f"🎯 Punto fijado: X={cx}px, Y={cy}px (Línea amarilla = Plomada)")
 
             if st.button("🚀 3. Analizar Movimiento", type="primary", use_container_width=True):
-                with st.spinner("Procesando trayectoria con OpenCV..."):
+                with st.spinner("Procesando trayectoria con OpenCV y codificando video..."):
                     cap = cv2.VideoCapture(video_path)
 
                     if hasattr(cv2, 'TrackerCSRT_create'):
@@ -126,17 +130,8 @@ if video_file is not None:
                     concentric_pts = vertical_velocities[vertical_velocities > 0.05]
                     mean_vel = float(np.mean(concentric_pts)) if len(concentric_pts) > 0 else 0.0
 
-                    temp_dir = tempfile.gettempdir()
-                    out_video_path = os.path.join(temp_dir, "out_video.mp4")
-
-                    # Códec compatible con navegadores web y móviles
-                    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-                    out_writer = cv2.VideoWriter(out_video_path, fourcc, fps, (target_w, target_h))
-
-                    # Fallback de códec si avc1 no está disponible en la build de OpenCV
-                    if not out_writer.isOpened():
-                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                        out_writer = cv2.VideoWriter(out_video_path, fourcc, fps, (target_w, target_h))
+                    # Renderizar cuadros y guardar con FFmpeg nativo
+                    out_frames = []
 
                     for idx in range(total_frames):
                         frame = frames_buffer[idx].copy()
@@ -156,7 +151,7 @@ if video_file is not None:
                         cv2.circle(frame, (curr_cx, curr_cy), 5, (255, 255, 255), -1, cv2.LINE_AA)
                         cv2.circle(frame, (curr_cx, curr_cy), 2, (16, 185, 129), -1, cv2.LINE_AA)
 
-                        # Panel HUD de métricas sobre el video
+                        # HUD métricas
                         overlay = frame.copy()
                         cv2.rectangle(overlay, (15, 15), (320, 110), (15, 23, 42), -1)
                         cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
@@ -167,10 +162,24 @@ if video_file is not None:
                         cv2.putText(frame, f"Recorrido: {distancia_vertical_cm:.1f} cm", (25, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (56, 189, 248), 2, cv2.LINE_AA)
                         cv2.putText(frame, f"Vel. actual: {vertical_velocities[idx]:.2f} m/s", (25, 98), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (226, 232, 240), 1, cv2.LINE_AA)
 
-                        out_writer.write(frame)
+                        # Convertir a RGB para ImageIO
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        out_frames.append(frame_rgb)
 
-                    out_writer.release()
+                    temp_dir = tempfile.gettempdir()
+                    out_video_path = os.path.join(temp_dir, "out_video.mp4")
 
+                    # Exportación H.264 compatible universalmente
+                    imageio.mimwrite(
+                        out_video_path,
+                        out_frames,
+                        fps=fps,
+                        codec='libx264',
+                        quality=8,
+                        pixelformat='yuv420p'
+                    )
+
+                    # Gráfico de velocidad
                     fig, ax = plt.subplots(figsize=(8, 3.8), dpi=140)
                     plt.style.use('dark_background')
                     fig.patch.set_facecolor('#0B0F17')
@@ -198,4 +207,4 @@ if video_file is not None:
                     st.subheader("🎥 Video con Trazo:")
                     with open(out_video_path, 'rb') as vf:
                         video_bytes = vf.read()
-                        st.video(video_bytes)
+                        st.video(video_bytes, format="video/mp4")
